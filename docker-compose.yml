@@ -1,0 +1,86 @@
+# Three services on one private network. Compose gives each a DNS
+# name equal to its service name, which is how they find each other.
+#
+# PORTS: every published port below comes from the .env file next to
+# this one. That is the single place to change them.
+#
+# Read every "ports:" line as  HOST:CONTAINER.
+#   - the LEFT number is yours to change when something clashes
+#   - the RIGHT number is inside the container and stays fixed
+
+services:
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: intake
+      POSTGRES_PASSWORD: intake
+      POSTGRES_DB: intake
+    volumes:
+      # Mount our schema into the folder Postgres runs on first boot.
+      # :ro — the container has no business writing to our source file.
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      # Named volume so data survives `docker compose down`.
+      # init.sql only runs when this volume is EMPTY, so to re-seed
+      # from scratch you must destroy it: `docker compose down -v`.
+      - db_data:/var/lib/postgresql/data
+    ports:
+      # Published only so YOU can connect with psql/DBeaver from your
+      # laptop. The api does NOT use this port — see the note below.
+      - "${DB_PORT:-5433}:5432"
+    healthcheck:
+      # "Started" is not "ready": Postgres takes a moment to accept
+      # connections. This command is retried until it succeeds.
+      test: ["CMD-SHELL", "pg_isready -U intake -d intake"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: ./api
+    environment:
+      # NOTE THE HOSTNAME: 'db', not 'localhost'. Inside this network
+      # the database is reachable by its service name. 'localhost'
+      # here would mean the api's own container, where nothing listens.
+      #
+      # NOTE THE PORT: 5432, the port Postgres actually listens on
+      # INSIDE its container. The published 5433 is a host-side alias
+      # and is invisible from in here. Writing db:5433 is the single
+      # most common mistake in this file — it fails with
+      # "connection refused" no matter how healthy the database is.
+      DATABASE_URL: postgresql://intake:intake@db:5432/intake
+      # Which origin the browser will be on, so CORS can allow it.
+      # Must match the web service's published port.
+      WEB_ORIGIN: http://localhost:${WEB_PORT:-3000}
+    ports:
+      - "${API_PORT:-8001}:8000"
+    healthcheck:
+      # No curl in python:slim, so use the Python that is already here.
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    depends_on:
+      db:
+        # Wait for the healthcheck to pass, not merely for the
+        # container to start. Without this the api can race Postgres
+        # and crash on its first query.
+        condition: service_healthy
+
+  web:
+    build: ./web
+    environment:
+      # NOTE THE HOSTNAME: 'localhost', because this value is used by
+      # the BROWSER, which runs on your machine — outside this network.
+      # So it must be the PUBLISHED api port, not the internal 8000.
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8001}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db_data:
