@@ -1,0 +1,6 @@
+fastapi==0.115.0           # the web framework
+uvicorn[standard]==0.30.6  # the server that actually listens on a port
+pydantic==2.9.2            # request/response validation
+psycopg[binary]==3.2.3     # PostgreSQL driver ([binary] = no compiler needed)
+pytest==8.3.3              # test runner
+httpx==0.27.2              # required by FastAPI's TestClient
